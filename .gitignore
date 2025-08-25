@@ -1,0 +1,26 @@
+# .gitignore
+
+# Virtual Environment
+venv/
+.venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# VS Code settings
+.vscode/
+
+# macOS files
+.DS_Store
+
+# Data csv's
+data/*.csv
+
+# Model files
+app/*.pkl
