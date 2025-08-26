@@ -6,3 +6,4 @@ jupyterlab
 joblib
 matplotlib
 seaborn
+plotly
