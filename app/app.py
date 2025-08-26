@@ -1,4 +1,3 @@
-# app/app.py
 import streamlit as st
 import pandas as pd
 import joblib
@@ -13,8 +12,8 @@ st.set_page_config(
 @st.cache_resource
 def load_model():
     try:
-        model = joblib.load('app/call_forecasting_model.pkl')
-        model_cols = joblib.load('app/model_feature_columns.pkl')
+        model = joblib.load('models/call_forecasting_model.pkl')
+        model_cols = joblib.load('models/model_feature_columns.pkl')
         return model, model_cols
     except FileNotFoundError:
         return None, None
@@ -37,7 +36,7 @@ st.title("📞 Dispatch Call Volume Forecaster")
 st.markdown("This tool uses a machine learning model to predict the expected number of patient calls by category for a given hour.")
 
 if model is None or model_feature_columns is None:
-    st.error("Model not found. Please ensure `call_forecasting_model.pkl` and `model_feature_columns.pkl` are in the 'app' directory and that the training notebook has been run successfully.")
+    st.error("Model not found. Please ensure `call_forecasting_model.pkl` and `model_feature_columns.pkl` are in the 'models' directory and that the training notebook has been run successfully.")
 else:
     col1, col2 = st.columns(2)
 
