@@ -21,6 +21,3 @@ __pycache__/
 
 # Data csv's
 data/*.csv
-
-# Model files
-app/*.pkl
