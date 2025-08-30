@@ -67,7 +67,6 @@ ORGANIZATION_DATA = [
 @st.cache_data
 def load_organization_data():
     df = pd.DataFrame(ORGANIZATION_DATA)
-    # Create a mapping from unit name to organization_id for easy lookup
     unit_to_org_id = pd.Series(df.organization_id.values, index=df.unit_name).to_dict()
     return df, unit_to_org_id
 
@@ -83,47 +82,39 @@ def load_model():
 org_data, unit_to_org_id_map = load_organization_data()
 model, model_feature_columns = load_model()
 
-# Core Functions
 def generate_single_unit_forecast(start_time, duration, census, organization_id, feature_columns):
     timestamps = [start_time + timedelta(hours=h) for h in range(duration)]
     predictions = []
     
-    # Identify all organization_id columns from the feature list
     org_id_cols = [col for col in feature_columns if col.startswith('organization_id_')]
     
     for ts in timestamps:
-        # Create a dictionary for the feature data
         feature_data = {
             'rooms_with_patients': census,
             'hour_of_day': ts.hour,
             'day_of_week': ts.weekday()
         }
         
-        # Add all possible one-hot encoded org_id columns, setting them to 0
         for col in org_id_cols:
             feature_data[col] = 0
         
-        # Set the specific org_id for the current unit to 1
         current_org_col = f'organization_id_{organization_id}'
         if current_org_col in feature_data:
             feature_data[current_org_col] = 1
 
-        # Create a DataFrame from the dictionary
         features_df = pd.DataFrame([feature_data])
         
-        # Ensure the column order matches exactly what the model was trained on
         features_df = features_df[feature_columns]
         
         prediction = model.predict(features_df)
         
-        # Ensure predictions are not negative
         positive_prediction = [max(0, val) for val in prediction[0]]
         predictions.append(positive_prediction)
         
     categories = ['Clinical', 'Mobility', 'Basic Need', 'Housekeeping', 'Other']
     return pd.DataFrame(predictions, columns=categories, index=pd.to_datetime(timestamps))
 
-# Streamlit User Interface
+# Streamlit UI
 st.title("Dispatch Call Volume Forecaster")
 
 if model is None or org_data.empty:
@@ -167,7 +158,6 @@ else:
         with st.spinner("Generating forecast..."):
             unit_forecasts = {}
             for unit_name, census_val in unit_census_map.items():
-                # Find the organization_id for the current unit
                 org_id = unit_to_org_id_map.get(unit_name)
                 if org_id:
                     unit_forecasts[unit_name] = generate_single_unit_forecast(start_datetime, duration, census_val, org_id, model_feature_columns)
@@ -189,7 +179,6 @@ else:
         if not selected_units_for_view:
             st.warning("Please select at least one unit to display results.")
         else:
-            # Filter out any potential empty dataframes before concatenating
             valid_forecasts = [unit_forecasts[unit] for unit in selected_units_for_view if not unit_forecasts[unit].empty]
             if not valid_forecasts:
                 st.warning("No valid forecast data to display for the selected units.")
