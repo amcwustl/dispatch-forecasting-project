@@ -65,7 +65,9 @@ ORGANIZATION_DATA = [
 
 @st.cache_data
 def load_organization_data():
-    return pd.DataFrame(ORGANIZATION_DATA)
+    df = pd.DataFrame(ORGANIZATION_DATA)
+    unit_to_org_id = pd.Series(df.organization_id.values, index=df.unit_name).to_dict()
+    return df, unit_to_org_id
 
 @st.cache_resource
 def load_model():
@@ -76,22 +78,42 @@ def load_model():
     except FileNotFoundError:
         return None, None
 
-org_data = load_organization_data()
+org_data, unit_to_org_id_map = load_organization_data()
 model, model_feature_columns = load_model()
 
-# Core Functions
-def generate_single_unit_forecast(start_time, duration, census, feature_columns):
+def generate_single_unit_forecast(start_time, duration, census, organization_id, feature_columns):
     timestamps = [start_time + timedelta(hours=h) for h in range(duration)]
     predictions = []
+    
+    org_id_cols = [col for col in feature_columns if col.startswith('organization_id_')]
+    
     for ts in timestamps:
-        features_df = pd.DataFrame(columns=feature_columns)
-        features_df.loc[0] = {'hour_of_day': ts.hour, 'day_of_week': ts.weekday(), 'month': ts.month, 'rooms_with_patients': census}
+        feature_data = {
+            'rooms_with_patients': census,
+            'hour_of_day': ts.hour,
+            'day_of_week': ts.weekday()
+        }
+        
+        for col in org_id_cols:
+            feature_data[col] = 0
+        
+        current_org_col = f'organization_id_{organization_id}'
+        if current_org_col in feature_data:
+            feature_data[current_org_col] = 1
+
+        features_df = pd.DataFrame([feature_data])
+        
+        features_df = features_df[feature_columns]
+        
         prediction = model.predict(features_df)
-        predictions.append(prediction[0])
+        
+        positive_prediction = [max(0, val) for val in prediction[0]]
+        predictions.append(positive_prediction)
+        
     categories = ['Clinical', 'Mobility', 'Basic Need', 'Housekeeping', 'Other']
     return pd.DataFrame(predictions, columns=categories, index=pd.to_datetime(timestamps))
 
-# Streamlit User Interface
+# Streamlit UI
 st.title("Dispatch Call Volume Forecaster")
 
 if model is None or org_data.empty:
@@ -124,7 +146,7 @@ else:
         now = datetime.now()
         next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         start_date = st.date_input("Start Date", value=next_hour.date(), help="Choose the starting date for your forecast period.")
-        start_time_val = st.time_input("Start Time", value=next_hour.time(), step=timedelta(hours=1), help="Choose the starting hour for your forecast period.")
+        start_time_val = st.time_input("Start Time", value=next_hour.time(), help="Choose the starting hour for your forecast period.")
         start_datetime = datetime.combine(start_date, start_time_val)
     with time_cols[1]:
         duration = st.slider("Forecast Duration (Hours)", 1, 24, 8, 1, help="Select the length of the forecast, from 1 to 24 hours.")
@@ -134,8 +156,10 @@ else:
     if st.button("Forecast Call Volume", type="primary", use_container_width=True):
         with st.spinner("Generating forecast..."):
             unit_forecasts = {}
-            for unit, census in unit_census_map.items():
-                unit_forecasts[unit] = generate_single_unit_forecast(start_datetime, duration, census, model_feature_columns)
+            for unit_name, census_val in unit_census_map.items():
+                org_id = unit_to_org_id_map.get(unit_name)
+                if org_id:
+                    unit_forecasts[unit_name] = generate_single_unit_forecast(start_datetime, duration, census_val, org_id, model_feature_columns)
             
             st.session_state['unit_forecasts'] = unit_forecasts
             st.session_state['details'] = {"hospital": selected_hospital, "unit": selected_unit}
@@ -154,47 +178,51 @@ else:
         if not selected_units_for_view:
             st.warning("Please select at least one unit to display results.")
         else:
-            forecast_df = pd.concat([unit_forecasts[unit] for unit in selected_units_for_view]).groupby(level=0).sum()
-            
-            total_calls = forecast_df.sum().sum()
-            peak_hour = forecast_df.sum(axis=1).idxmax()
-            peak_volume = forecast_df.sum(axis=1).max()
-            metric_cols = st.columns(3)
-            metric_cols[0].metric("Total Predicted Calls", f"{total_calls:.1f}")
-            metric_cols[1].metric("Predicted Peak Hour", peak_hour.strftime('%H:%M'))
-            metric_cols[2].metric("Calls During Peak Hour", f"{peak_volume:.1f}")
-            
-            st.divider()
+            valid_forecasts = [unit_forecasts[unit] for unit in selected_units_for_view if not unit_forecasts[unit].empty]
+            if not valid_forecasts:
+                st.warning("No valid forecast data to display for the selected units.")
+            else:
+                forecast_df = pd.concat(valid_forecasts).groupby(level=0).sum()
+                
+                total_calls = forecast_df.sum().sum()
+                peak_hour = forecast_df.sum(axis=1).idxmax()
+                peak_volume = forecast_df.sum(axis=1).max()
+                metric_cols = st.columns(3)
+                metric_cols[0].metric("Total Predicted Calls", f"{total_calls:.1f}")
+                metric_cols[1].metric("Predicted Peak Hour", peak_hour.strftime('%H:%M'))
+                metric_cols[2].metric("Calls During Peak Hour", f"{peak_volume:.1f}")
+                
+                st.divider()
 
-            color_map = {'Clinical': '#6366F1', 'Mobility': '#14B8A6', 'Basic Need': '#F97316', 'Housekeeping': '#EC4899', 'Other': '#6B7280'}
-            
-            st.subheader("Hourly Call Volume by Category")
-            fig_area = go.Figure()
-            for category in forecast_df.columns:
-                fig_area.add_trace(go.Scatter(
-                    x=forecast_df.index, y=forecast_df[category], mode='lines', stackgroup='one',
-                    name=category, fillcolor=color_map.get(category), line=dict(width=0.5)
-                ))
-            fig_area.update_layout(template="plotly_dark", hovermode='x unified', margin=dict(t=10, b=10), height=400,
-                                   legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig_area, use_container_width=True)
+                color_map = {'Clinical': '#6366F1', 'Mobility': '#14B8A6', 'Basic Need': '#F97316', 'Housekeeping': '#EC4899', 'Other': '#6B7280'}
+                
+                st.subheader("Hourly Call Volume by Category")
+                fig_area = go.Figure()
+                for category in forecast_df.columns:
+                    fig_area.add_trace(go.Scatter(
+                        x=forecast_df.index, y=forecast_df[category], mode='lines', stackgroup='one',
+                        name=category, fillcolor=color_map.get(category), line=dict(width=0.5)
+                    ))
+                fig_area.update_layout(template="plotly_dark", hovermode='x unified', margin=dict(t=10, b=10), height=400,
+                                       legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig_area, use_container_width=True)
 
-            col_left, col_right = st.columns(2)
-            with col_left:
-                st.subheader("Total Call Distribution")
-                category_totals = forecast_df.sum().sort_values(ascending=False)
-                fig_pie = go.Figure(data=[go.Pie(labels=category_totals.index, values=category_totals.values, hole=0.4,
-                                                 marker=dict(colors=[color_map.get(cat) for cat in category_totals.index]))])
-                fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-                fig_pie.update_layout(showlegend=False, margin=dict(t=10, b=10), height=400, template="plotly_dark")
-                st.plotly_chart(fig_pie, use_container_width=True)
+                col_left, col_right = st.columns(2)
+                with col_left:
+                    st.subheader("Total Call Distribution")
+                    category_totals = forecast_df.sum().sort_values(ascending=False)
+                    fig_pie = go.Figure(data=[go.Pie(labels=category_totals.index, values=category_totals.values, hole=0.4,
+                                                     marker=dict(colors=[color_map.get(cat) for cat in category_totals.index]))])
+                    fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                    fig_pie.update_layout(showlegend=False, margin=dict(t=10, b=10), height=400, template="plotly_dark")
+                    st.plotly_chart(fig_pie, use_container_width=True)
 
-            with col_right:
-                st.subheader("Detailed Forecast Data")
-                display_df = forecast_df.copy()
-                display_df['Total'] = display_df.sum(axis=1)
-                display_df.index = display_df.index.strftime('%Y-%m-%d %H:%M')
-                st.dataframe(display_df.style.format("{:.1f}"), height=400)
+                with col_right:
+                    st.subheader("Detailed Forecast Data")
+                    display_df = forecast_df.copy()
+                    display_df['Total'] = display_df.sum(axis=1)
+                    display_df.index = display_df.index.strftime('%Y-%m-%d %H:%M')
+                    st.dataframe(display_df.style.format("{:.1f}"), height=400)
 
     st.divider()
     with st.expander("About This Application"):
